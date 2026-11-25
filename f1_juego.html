@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>F1 Turbo Dodge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background-color: #111;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #game-container {
+      position: relative;
+      width: 100%;
+      max-width: 420px;
+      height: 100vh;
+      max-height: 750px;
+      box-shadow: 0 0 30px rgba(225, 6, 0, 0.4);
+      border-left: 4px solid #333;
+      border-right: 4px solid #333;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #2b2b2b;
+    }
+    #hud {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      right: 15px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 18px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      pointer-events: none;
+      text-shadow: 2px 2px 4px #000;
+    }
+    .badge {
+      background: rgba(0, 0, 0, 0.65);
+      padding: 6px 12px;
+      border-radius: 6px;
+      border-left: 4px solid #e10600;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 15, 15, 0.88);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 25px;
+    }
+    h1 {
+      font-size: 40px;
+      font-style: italic;
+      color: #e10600;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+      letter-spacing: 2px;
+    }
+    p {
+      color: #ccc;
+      margin-bottom: 25px;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    button {
+      background: #e10600;
+      color: white;
+      border: none;
+      padding: 15px 38px;
+      font-size: 18px;
+      font-weight: bold;
+      text-transform: uppercase;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(225, 6, 0, 0.5);
+      transition: transform 0.1s, background 0.2s;
+    }
+    button:hover { background: #ff1e17; transform: scale(1.05); }
+    button:active { transform: scale(0.96); }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <div id="game-container">
+    <canvas id="track"></canvas>
+
+    <div id="hud">
+      <div class="badge">PTS: <span id="score">0</span></div>
+      <div class="badge">KM/H: <span id="speed">180</span></div>
+    </div>
+
+    <div id="overlay">
+      <h1 id="title">F1 TURBO</h1>
+      <p id="subtitle">Usa las flechas <b>◀ ▶</b> (o toca los lados de la pantalla) para esquivar autos rivales y charcos de aceite.</p>
+      <button id="start-btn">¡ARRANCAR!</button>
+    </div>
+  </div>
+
+<script>
+  const canvas = document.getElementById('track');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('start-btn');
+  const titleEl = document.getElementById('title');
+  const subtitleEl = document.getElementById('subtitle');
+  const scoreEl = document.getElementById('score');
+  const speedEl = document.getElementById('speed');
+
+  // Ajustar resolución interna del canvas
+  function resize() {
+    canvas.width = canvas.parentElement.clientWidth;
+    canvas.height = canvas.parentElement.clientHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Audio sencillo con Web Audio API (sin archivos externos)
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  function playSound(freq, type, duration) {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  }
+
+  // Estado del juego
+  let gameRunning = false;
+  let score = 0;
+  let baseSpeed = 6;
+  let roadOffset = 0;
+  let obstacles = [];
+  let spawnTimer = 0;
+  let keys = { left: false, right: false };
+
+  const player = {
+    w: 44,
+    h: 82,
+    x: 0,
+    y: 0,
+    speedX: 7,
+    color: '#e10600' // Rojo Ferrari
+  };
+
+  // Dibujar un monoplaza de F1 visto desde arriba
+  function drawF1Car(x, y, w, h, mainColor, accentColor) {
+    ctx.save();
+    ctx.translate(x, y);
+
+    // Llantas (4)
+    ctx.fillStyle = '#111';
+    const wheelW = 9, wheelH = 18;
+    ctx.fillRect(-4, 12, wheelW, wheelH);           // Delantera izq
+    ctx.fillRect(w - wheelW + 4, 12, wheelW, wheelH); // Delantera der
+    ctx.fillRect(-5, h - 26, wheelW + 1, wheelH + 2); // Trasera izq
+    ctx.fillRect(w - wheelW + 4, h - 26, wheelW + 1, wheelH + 2); // Trasera der
+
+    // Alerón delantero
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(2, 0, w - 4, 8);
+
+    // Chasis / Nariz
+    ctx.fillStyle = mainColor;
+    ctx.beginPath();
+    ctx.moveTo(w / 2 - 5, 4);
+    ctx.lineTo(w / 2 + 5, 4);
+    ctx.lineTo(w - 8, 32);
+    ctx.lineTo(w - 6, h - 12);
+    ctx.lineTo(6, h - 12);
+    ctx.lineTo(8, 32);
+    ctx.closePath();
+    ctx.fill();
+
+    // Pontones laterales
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(8, 34, 6, 26);
+    ctx.fillRect(w - 14, 34, 6, 26);
+
+    // Cabina y casco del piloto
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath();
+    ctx.ellipse(w / 2, 44, 7, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#ffd700'; // Casco amarillo
+    ctx.beginPath();
+    ctx.arc(w / 2, 42, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Alerón trasero
+    ctx.fillStyle = '#111';
+    ctx.fillRect(4, h - 9, w - 8, 9);
+    ctx.fillStyle = mainColor;
+    ctx.fillRect(6, h - 8, w - 12, 4);
+
+    ctx.restore();
+  }
+
+  // Dibujar pista, bordes (pianos) y líneas
+  function drawTrack() {
+    const curbWidth = 18;
+    // Asfalto
+    ctx.fillStyle = '#2c2c2e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Pianos rojo/blanco a los lados
+    const segmentH = 40;
+    for (let y = -segmentH + (roadOffset % (segmentH * 2)); y < canvas.height; y += segmentH) {
+      const isRed = Math.floor((y - roadOffset) / segmentH) % 2 === 0;
+      ctx.fillStyle = isRed ? '#e10600' : '#ffffff';
+      ctx.fillRect(0, y, curbWidth, segmentH);
+      ctx.fillRect(canvas.width - curbWidth, y, curbWidth, segmentH);
+    }
+
+    // Líneas divisorias de 3 carriles
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+    const lane1 = canvas.width / 3;
+    const lane2 = (canvas.width / 3) * 2;
+    for (let y = -60 + (roadOffset % 90); y < canvas.height; y += 90) {
+      ctx.fillRect(lane1 - 3, y, 6, 45);
+      ctx.fillRect(lane2 - 3, y, 6, 45);
+    }
+  }
+
+  function spawnObstacle() {
+    const margin = 26;
+    const isOil = Math.random() < 0.25; // 25% probabilidad de mancha de aceite
+    if (isOil) {
+      const size = 42;
+      obstacles.push({
+        type: 'oil',
+        x: margin + Math.random() * (canvas.width - margin * 2 - size),
+        y: -size,
+        w: size,
+        h: size,
+        speed: baseSpeed
+      });
+    } else {
+      const colors = [
+        { main: '#00d2be', accent: '#111' },    // Mercedes
+        { main: '#0600ef', accent: '#ff1801' }, // Red Bull
+        { main: '#ff8700', accent: '#111' },    // McLaren
+        { main: '#006f62', accent: '#cedc00' }  // Aston Martin
+      ];
+      const theme = colors[Math.floor(Math.random() * colors.length)];
+      obstacles.push({
+        type: 'car',
+        x: margin + Math.random() * (canvas.width - margin * 2 - 44),
+        y: -90,
+        w: 44,
+        h: 82,
+        speed: baseSpeed * (0.45 + Math.random() * 0.25),
+        theme
+      });
+    }
+  }
+
+  function checkCollision(a, b) {
+    const pad = 6; // Margen indulgente para que se sienta justo
+    return (
+      a.x + pad < b.x + b.w - pad &&
+      a.x + a.w - pad > b.x + pad &&
+      a.y + pad < b.y + b.h - pad &&
+      a.y + a.h - pad > b.y + pad
+    );
+  }
+
+  function resetGame() {
+    score = 0;
+    baseSpeed = 6.5;
+    obstacles = [];
+    player.x = canvas.width / 2 - player.w / 2;
+    player.y = canvas.height - player.h - 30;
+    gameRunning = true;
+    overlay.classList.add('hidden');
+    playSound(320, 'sawtooth', 0.25);
+    requestAnimationFrame(loop);
+  }
+
+  function gameOver() {
+    gameRunning = false;
+    playSound(90, 'sawtooth', 0.5);
+    titleEl.textContent = '¡BANDERA ROJA!';
+    subtitleEl.innerHTML = `Chocaste en la pista.<br><b>Puntuación final: ${Math.floor(score)} pts</b>`;
+    startBtn.textContent = 'CORRER DE NUEVO';
+    overlay.classList.remove('hidden');
+  }
+
+  function loop() {
+    if (!gameRunning) return;
+
+    // Aumentar dificultad gradualmente
+    score += 0.15;
+    baseSpeed = 6.5 + Math.floor(score / 60) * 0.8;
+    roadOffset += baseSpeed;
+
+    scoreEl.textContent = Math.floor(score);
+    speedEl.textContent = Math.floor(180 + (baseSpeed - 6.5) * 18);
+
+    // Movimiento del jugador
+    const margin = 20;
+    if (keys.left && player.x > margin) player.x -= player.speedX;
+    if (keys.right && player.x < canvas.width - player.w - margin) player.x += player.speedX;
+
+    drawTrack();
+    drawF1Car(player.x, player.y, player.w, player.h, player.color, '#ffffff');
+
+    // Generar obstáculos
+    spawnTimer++;
+    const spawnRate = Math.max(26, 62 - Math.floor(score / 40) * 3);
+    if (spawnTimer >= spawnRate) {
+      spawnObstacle();
+      spawnTimer = 0;
+    }
+
+    // Actualizar y dibujar obstáculos
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const obs = obstacles[i];
+      obs.y += obs.speed;
+
+      if (obs.type === 'oil') {
+        ctx.fillStyle = '#0d0d0d';
+        ctx.beginPath();
+        ctx.ellipse(obs.x + obs.w / 2, obs.y + obs.h / 2, obs.w / 2, obs.h / 2.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#555';
+        ctx.stroke();
+      } else {
+        drawF1Car(obs.x, obs.y, obs.w, obs.h, obs.theme.main, obs.theme.accent);
+      }
+
+      if (checkCollision(player, obs)) {
+        gameOver();
+        return;
+      }
+
+      if (obs.y > canvas.height) {
+        obstacles.splice(i, 1);
+        playSound(520, 'sine', 0.05); // Pequeño sonido al rebasar
+      }
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  // Controles de teclado
+  window.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = true;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+  });
+  window.addEventListener('keyup', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') keys.left = false;
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+  });
+
+  // Controles táctiles / clic en pantalla (mitad izquierda / mitad derecha)
+  canvas.addEventListener('pointerdown', e => {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    if (clickX < rect.width / 2) keys.left = true;
+    else keys.right = true;
+  });
+  window.addEventListener('pointerup', () => {
+    keys.left = false;
+    keys.right = false;
+  });
+
+  startBtn.addEventListener('click', resetGame);
+</script>
+</body>
+</html>
